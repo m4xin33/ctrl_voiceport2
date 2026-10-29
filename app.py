@@ -1,127 +1,98 @@
-import glob
-import json
+import base64
 import os
-import time
-from bokeh.models import CustomJS
-from bokeh.models.widgets import Button
-from googletrans import Translator
-from gtts import gTTS
-from openai import OpenAI  # (Mantenemos tus imports originales)
-import paho.client as paho  # O paho.mqtt.client según tu entorno
-from PIL import Image
+from openai import OpenAI
 import streamlit as st
-from streamlit_bokeh_events import streamlit_bokeh_events
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
+
+# Function to encode the image to base64
+def encode_image(image_file):
+    return base64.b64encode(image_file.getvalue()).decode("utf-8")
+
+
 st.set_page_config(
-    page_title="Control por Voz MQTT",
-    page_icon="🎙️",
-    layout="centered",
-    initial_sidebar_state="collapsed",
+    page_title="Analisis de imagen", layout="centered", initial_sidebar_state="collapsed"
 )
+# Streamlit page setup
+st.title("Análisis de Imagen:🤖🏞️")
+ke = st.text_input("Ingresa tu Clave", type="password")
+os.environ["OPENAI_API_KEY"] = ke
 
 
-# --- FUNCIONES MQTT ---
-def on_publish(client, userdata, result):
-    print("el dato ha sido publicado \n")
-    pass
+# Retrieve the OpenAI API Key from secrets
+api_key = os.environ["OPENAI_API_KEY"]
 
+# File uploader allows user to add their own image
+uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
 
-def on_message(client, userdata, message):
-    global message_received
-    time.sleep(2)
-    message_received = str(message.payload.decode("utf-8"))
-    st.info(f"Mensaje del broker: {message_received}")
+if uploaded_file:
+    # Display the uploaded image
+    with st.expander("Image", expanded=True):
+        st.image(
+            uploaded_file, caption=uploaded_file.name, use_container_width=True
+        )
 
+# Toggle for showing additional details input
+show_details = st.toggle("Pregunta algo específico sobre la imagen", value=False)
 
-broker = "broker.mqttdashboard.com"
-port = 1883
-client1 = paho.Client("GIT-HUBC")
-client1.on_message = on_message
-
-
-# --- CABECERA PRINCIPAL ---
-st.title("🎙️ Interfaces Multimodales: Control por Voz")
-st.markdown(
-    "Interactúa mediante comandos de voz en tiempo real conectados a un broker MQTT."
-)
-st.markdown("---")
-
-# --- DISEÑO EN COLUMNAS PARA LA PRESENTACIÓN ---
-col1, col2 = st.columns([1, 2], gap="medium")
-
-with col1:
-    try:
-        image = Image.open("voice_ctrl.jpg")
-        st.image(image, use_container_width=True)
-    except Exception:
-        st.info("💡 [Imagen 'voice_ctrl.jpg' no encontrada]")
-
-with col2:
-    st.subheader("Panel de Activación")
-    st.markdown(
-        "Haz clic en el botón inferior **'Inicio'**, concede permisos de micrófono en tu navegador y pronuncia tu comando."
+if show_details:
+    # Text input for additional details about the image, shown only if toggle is True
+    additional_details = st.text_area(
+        "Adiciona contexto de la imagen aqui:", disabled=not show_details
     )
-    st.markdown("")
 
-    # Botón Bokeh para reconocimiento de voz
-    stt_button = Button(label="🎤 Iniciar Reconocimiento", width=220)
+# Button to trigger the analysis
+analyze_button = st.button("Analiza la imagen", type="secondary")
 
-    stt_button.js_on_event(
-        "button_click",
-        CustomJS(
-            code="""
-        var recognition = new webkitSpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-     
-        recognition.onresult = function (e) {
-            var value = "";
-            for (var i = e.resultIndex; i < e.results.length; ++i) {
-                if (e.results[i].isFinal) {
-                    value += e.results[i][0].transcript;
+# Check if an image has been uploaded, if the API key is available, and if the button has been pressed
+if uploaded_file is not None and api_key and analyze_button:
+    try:
+        # Inicializamos el cliente de OpenAI solo cuando se ejecuta el análisis (evita el error inicial)
+        client = OpenAI(api_key=api_key)
+
+        with st.spinner("Analizando ..."):
+            # Encode the image
+            base64_image = encode_image(uploaded_file)
+
+            prompt_text = "Describe what you see in the image in spanish"
+
+            if show_details and additional_details:
+                prompt_text += f"\n\nAdditional Context Provided by the User:\n{additional_details}"
+
+            # Create the payload for the completion request - CORRECTED FORMAT
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            },
+                        },
+                    ],
                 }
-            }
-            if ( value != "") {
-                document.dispatchEvent(new CustomEvent("GET_TEXT", {detail: value}));
-            }
-        }
-        recognition.start();
-        """
-        ),
-    )
+            ]
 
-    result = streamlit_bokeh_events(
-        stt_button,
-        events="GET_TEXT",
-        key="listen",
-        refresh_on_update=False,
-        override_height=75,
-        debounce_time=0,
-    )
+            # Make the request to the OpenAI API
+            # Stream the response
+            full_response = ""
+            message_placeholder = st.empty()
+            for completion in client.chat.completions.create(
+                model="gpt-4o", messages=messages, max_tokens=1200, stream=True
+            ):
+                # Check if there is content to display
+                if completion.choices[0].delta.content is not None:
+                    full_response += completion.choices[0].delta.content
+                    message_placeholder.markdown(full_response + "▌")
+            # Final update to placeholder after the stream ends
+            message_placeholder.markdown(full_response)
 
-st.markdown("---")
-st.subheader("📊 Estado y Resultados")
-
-# --- PROCESAMIENTO DEL EVENTO DE VOZ ---
-if result:
-    if "GET_TEXT" in result:
-        texto_reconocido = result.get("GET_TEXT")
-
-        # Mostramos el texto reconocido en una caja bonita de Streamlit
-        st.success(f"**Comando detectado:** {texto_reconocido}")
-
-        # Lógica MQTT intacta
-        client1.on_publish = on_publish
-        client1.connect(broker, port)
-        message = json.dumps({"Act1": texto_reconocido.strip()})
-        ret = client1.publish("voice_ctrl", message)
-
-    try:
-        os.mkdir("temp")
-    except Exception:
-        pass
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
 else:
-    st.info(
-        "Esperando comando de voz... Presiona el botón de arriba y habla claro."
-    )
+    # Warnings for user action required
+    if not uploaded_file and analyze_button:
+        st.warning("Please upload an image.")
+    if not api_key and analyze_button:
+        st.warning("Por favor ingresa tu API key.")
