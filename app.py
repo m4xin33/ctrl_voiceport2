@@ -48,7 +48,7 @@ col1, col2 = st.columns([1, 2], gap="medium")
 
 with col1:
     try:
-        image = Image.open("voice_ctrl.jpg")
+        image = Image.open("yellow-emoticon-telling-secret-another-260nw-217500808.webp")
         st.image(image, use_container_width=True)
     except Exception:
         st.info("💡 (Imagen 'voice_ctrl.jpg' no encontrada)")
